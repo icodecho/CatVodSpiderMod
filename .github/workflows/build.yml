@@ -38,21 +38,34 @@ jobs:
           java-version: '17'
           cache: gradle
 
-      # Runner 自带 Android SDK 且已接受许可；这里显式补装 compileSdk 37，避免首次构建竞态
-      - name: Ensure Android SDK platform 37
+      # 尽力而为：Runner 自带 SDK 且许可已预接受，AGP 会自动下载缺失组件；
+      # 此步失败绝不阻塞构建（Runner 的 sdkmanager 版本可能落后于最新 API level）
+      - name: Ensure Android SDK platform 37 (best effort)
         shell: pwsh
         run: |
           $sdk = $env:ANDROID_HOME
           if (-not $sdk) { $sdk = $env:ANDROID_SDK_ROOT }
-          $plat = Join-Path $sdk "platforms\android-37"
-          if (Test-Path $plat) {
-            Write-Host "platforms;android-37 already present"
-          } else {
-            $sdkmgr = Get-ChildItem "$sdk\cmdline-tools" -Recurse -Filter sdkmanager.bat |
-              Select-Object -First 1 -ExpandProperty FullName
-            & $sdkmgr "platforms;android-37" "platform-tools" --sdk_root=$sdk
-            if ($LASTEXITCODE -ne 0) { Write-Host "::warning::sdkmanager failed, AGP will auto-download" }
+          Write-Host "ANDROID_HOME=$sdk"
+          # AGP 自动下载组件要求许可已接受；缺失时补写标准许可指纹
+          $lic = Join-Path $sdk "licenses\android-sdk-license"
+          if (-not (Test-Path $lic)) {
+            New-Item -ItemType Directory -Force -Path (Split-Path $lic) | Out-Null
+            Set-Content -Path $lic -Value "8933bad161af617cd9b5cf5f1be78036af6c7bc1`n24333f8a63b6825ea9c5514f83c2829b004d1fee"
+            Write-Host "wrote android-sdk-license"
           }
+          $plat = Join-Path $sdk "platforms\android-37"
+          if (Test-Path $plat) { Write-Host "platforms;android-37 already present"; exit 0 }
+          $sdkmgr = Get-ChildItem "$sdk\cmdline-tools" -Recurse -Filter sdkmanager.bat |
+            Select-Object -First 1 -ExpandProperty FullName
+          if ($sdkmgr) {
+            'y' * 50 | & $sdkmgr "platforms;android-37" "platform-tools" --sdk_root=$sdk
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "::warning::sdkmanager could not install platforms;android-37; AGP will auto-download it"
+            }
+          } else {
+            Write-Host "::warning::sdkmanager not found; AGP will auto-download platforms;android-37"
+          }
+          exit 0
 
       - name: Build spiderJar
         shell: cmd
