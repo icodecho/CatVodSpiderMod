@@ -1,0 +1,89 @@
+name: Build custom_spider.jar
+
+# 用法：
+# 1. 把整个 CatVodSpider-main 目录作为 GitHub 仓库根推送（本文件位于 .github/workflows/build.yml）
+# 2. push 到 main/master 自动构建；推送 v* 标签（如 v1.0.0）会自动创建 GitHub Release 并附带 jar
+# 3. 任意构建产物可在 Actions 运行页面的 Artifacts 里下载 custom_spider.jar（含 .md5）
+# 4. wwd.json 的 spider 字段可直接指向 Release 地址：
+#    https://github.com/<用户>/<仓库>/releases/latest/download/custom_spider.jar
+
+on:
+  push:
+    branches: [ main, master ]
+    tags: [ 'v*' ]
+    paths-ignore:
+      - '**.md'
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      run_site_test:
+        description: '额外运行 siteTest（真实访问站点，可能因网络/风控失败）'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      # Runner 自带 Android SDK 且已接受许可；这里显式补装 compileSdk 37，避免首次构建竞态
+      - name: Ensure Android SDK platform 37
+        shell: pwsh
+        run: |
+          $sdk = $env:ANDROID_HOME
+          if (-not $sdk) { $sdk = $env:ANDROID_SDK_ROOT }
+          $plat = Join-Path $sdk "platforms\android-37"
+          if (Test-Path $plat) {
+            Write-Host "platforms;android-37 already present"
+          } else {
+            $sdkmgr = Get-ChildItem "$sdk\cmdline-tools" -Recurse -Filter sdkmanager.bat |
+              Select-Object -First 1 -ExpandProperty FullName
+            & $sdkmgr "platforms;android-37" "platform-tools" --sdk_root=$sdk
+            if ($LASTEXITCODE -ne 0) { Write-Host "::warning::sdkmanager failed, AGP will auto-download" }
+          }
+
+      - name: Build spiderJar
+        shell: cmd
+        run: gradlew.bat spiderJar --no-daemon --stacktrace
+
+      - name: Run siteTest (optional)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_site_test }}
+        continue-on-error: true
+        shell: cmd
+        run: gradlew.bat siteTest --no-daemon
+
+      - name: Show checksum
+        shell: pwsh
+        run: |
+          Get-Content jar/custom_spider.jar.md5
+          (Get-Item jar/custom_spider.jar).Length
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: custom_spider
+          path: |
+            jar/custom_spider.jar
+            jar/custom_spider.jar.md5
+          if-no-files-found: error
+
+      - name: Release on tag
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            jar/custom_spider.jar
+            jar/custom_spider.jar.md5
+          generate_release_notes: true
